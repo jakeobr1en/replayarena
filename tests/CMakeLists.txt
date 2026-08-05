@@ -25,6 +25,7 @@ function(replayarena_add_test name)
 endfunction()
 
 replayarena_add_test(cache_key_test)
+replayarena_add_test(clock_test)
 replayarena_add_test(request_queue_test)
 replayarena_add_test(request_queue_stress_test)
 replayarena_add_test(response_cache_test)

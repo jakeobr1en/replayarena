@@ -1,7 +1,9 @@
 #include "gateway/cache_key.h"
+#include "gateway/clock.h"
 #include "gateway/response_cache.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <gtest/gtest.h>
 #include <random>
@@ -9,22 +11,35 @@
 #include <thread>
 #include <vector>
 
-// Concurrency test for ResponseCache stage 1. Must stay silent under TSan in
-// CI. Fixed seeds: a failure here must reproduce.
+// Concurrency test for ResponseCache stages 1+2. Must stay silent under TSan
+// in CI. Fixed seeds: a failure here must reproduce. Time is driven by a
+// SimulatedClock advanced from a dedicated thread, so TTL expiry races get,
+// set, erase, and sweep without any wall-clock dependence.
 namespace replayarena {
 namespace {
 
-TEST(ResponseCacheStress, MixedGetSetEraseFromManyThreads) {
+using namespace std::chrono_literals;
+
+TEST(ResponseCacheStress, MixedOpsWithTtlAndConcurrentClockAdvance) {
   constexpr std::size_t kThreads = 8;
   constexpr std::size_t kOpsPerThread = 5000;
   constexpr std::size_t kKeySpace = 64;
 
-  ResponseCache cache;
+  SimulatedClock clock;
+  ResponseCache cache(clock);
   std::vector<CacheKey> keys;
   keys.reserve(kKeySpace);
   for (std::size_t i = 0; i < kKeySpace; ++i) {
     keys.push_back(CacheKey::make("model", "prompt-" + std::to_string(i), {{"seed", "7"}}));
   }
+
+  std::atomic<bool> stop_advancing{false};
+  std::thread advancer([&clock, &stop_advancing] {
+    while (!stop_advancing.load(std::memory_order_acquire)) {
+      clock.advance(1ms);
+      std::this_thread::yield();
+    }
+  });
 
   std::atomic<std::size_t> local_gets{0};
   std::vector<std::thread> workers;
@@ -34,12 +49,22 @@ TEST(ResponseCacheStress, MixedGetSetEraseFromManyThreads) {
       std::mt19937 rng(static_cast<std::mt19937::result_type>(t) + 1);
       for (std::size_t i = 0; i < kOpsPerThread; ++i) {
         const CacheKey& k = keys[rng() % kKeySpace];
-        switch (rng() % 4) {
+        switch (rng() % 8) {
         case 0:
           cache.set(k, "payload-" + std::to_string(rng() % 16));
           break;
         case 1:
+        case 2:
+          // Short TTLs, same order of magnitude as the advancer's steps, so
+          // expiry constantly races the other operations.
+          cache.set(k, "payload-" + std::to_string(rng() % 16),
+                    std::chrono::milliseconds(1 + rng() % 5));
+          break;
+        case 3:
           (void)cache.erase(k);
+          break;
+        case 4:
+          (void)cache.sweep();
           break;
         default: {
           const auto got = cache.get(k);
@@ -57,12 +82,14 @@ TEST(ResponseCacheStress, MixedGetSetEraseFromManyThreads) {
   for (auto& w : workers) {
     w.join();
   }
+  stop_advancing.store(true, std::memory_order_release);
+  advancer.join();
 
   const auto stats = cache.stats();
   EXPECT_EQ(stats.hits + stats.misses, local_gets.load());
   EXPECT_LE(stats.entries, kKeySpace);
 
-  // Erasing everything must drain the byte accounting to exactly zero.
+  // Draining everything must zero the byte accounting exactly.
   for (const auto& k : keys) {
     (void)cache.erase(k);
   }

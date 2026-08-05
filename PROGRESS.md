@@ -15,13 +15,15 @@ Rules for this file:
 - **What works today**: bounded MPSC `RequestQueue<T>` with backpressure
   (try_push fail-fast, blocking push with deadline), cancellation via
   shared `CancelToken` (cancelled entries skipped at pop, slots reclaimed),
-  and clean close/drain semantics; canonical `CacheKey` (length-prefixed,
-  param-order-independent) and thread-safe `ResponseCache` get/set/erase
-  with hit/miss/size stats; 30 tests including TSan-targeted stress tests
-  for both components.
+  and clean close/drain semantics; injected `Clock` abstraction
+  (`SteadyClock` production, `SimulatedClock` with manual advance for
+  tests/replay); canonical `CacheKey`; thread-safe `ResponseCache` with
+  get/set/erase, per-entry TTL (lazy reclaim on access + sweep), and
+  hit/miss/expiration/size stats; 45 tests, no sleeps anywhere in
+  TTL testing.
 - **Next issue up**: [#2](https://github.com/jakeobr1en/replayarena/issues/2)
-  stage 2 (per-entry TTL via an injected Clock; the Clock abstraction gets
-  introduced there). Stage 1 (get/set/erase) is done.
+  stage 3 (LRU eviction under a byte cap; deterministic eviction order).
+  Stages 1 (get/set/erase) and 2 (TTL) are done.
 
 ---
 
@@ -167,6 +169,51 @@ Rules for this file:
 **Dead ends**
 - None over the 30-minute bar this session.
 
+### 2026-08-04 - Issue #2 stage 2: TTL and the Clock abstraction
+
+**Shipped**
+- `src/gateway/clock.h`: `Clock` interface (monotonic `now()`),
+  `SteadyClock` (production; the single place wall time enters the
+  system), `SimulatedClock` (manual `advance()`, atomic, thread-safe, no
+  background progression). Shared infrastructure for the scheduler (#3),
+  rate limiter, and replay harness (#4).
+- Response cache stage 2: per-entry TTL evaluated only against the
+  injected clock. Expiry boundary defined as now() >= set_time + ttl
+  (visible strictly before, gone at the boundary). Expired entries are
+  never returned; reclaimed lazily on access and in bulk via `sweep()`.
+  Overwrites replace the expiry (set without ttl makes an entry
+  immortal). New `expirations` stat, kept separate from stage 3's
+  `evictions`.
+- 15 new tests (45 total): clock unit tests (including a
+  concurrent-advance loss check), TTL boundary tests stepped to exact
+  nanosecond instants, lazy-reclaim accounting, sweep idempotence, and a
+  same-ops-same-clock-steps determinism check. The stress test now runs
+  a dedicated clock-advancer thread so expiry races get/set/erase/sweep
+  under TSan. Zero sleeps in any TTL test.
+- Mechanical enforcement of the wall-clock ban: grep for
+  steady_clock/system_clock/high_resolution_clock over src/ returns hits
+  only in clock.h. Worth automating as a CI step when a third component
+  starts using the clock.
+
+**Decisions**
+- Clock vocabulary reuses std::chrono::steady_clock's time_point/duration
+  types rather than inventing a parallel unit system: free interop with
+  cv waits and chrono literals, zero conversion code. The determinism
+  boundary is who calls now(), not the type of the timestamp.
+- SimulatedClock is an atomic counter, not mutex-guarded: advance() and
+  now() are wait-free, so tests can advance time from a separate thread
+  while workers hammer the cache, which is exactly what the stress test
+  does.
+- get() on an expired entry re-checks under the exclusive lock before
+  reclaiming: between the shared-lock observation and the upgrade, a
+  set() may have replaced the entry with a fresh one, which must not be
+  reclaimed. This upgrade race is the kind of bug TSan does not catch
+  (it is a logic race, not a data race), so it is pinned by the
+  OverwriteReplacesTtl test instead.
+
+**Dead ends**
+- None over the 30-minute bar this session.
+
 ---
 
 ## Insights (one-liners worth expanding into posts)
@@ -179,3 +226,7 @@ Rules for this file:
 - The tool that checks your memory bugs can have its own: ASan on macOS 26
   deadlocks re-entering its own initializer through Apple's malloc zone
   hooks.
+- A lock upgrade is a time machine: everything you observed under the
+  shared lock is ancient history by the time you hold the exclusive one.
+- TSan proves you have no data races, not that your races are benign;
+  logic races need a test that makes the interleaving deterministic.
