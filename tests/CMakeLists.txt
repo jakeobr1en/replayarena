@@ -10,10 +10,19 @@ FetchContent_Declare(
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-add_executable(smoke_test smoke_test.cpp)
-target_link_libraries(smoke_test PRIVATE replayarena_options GTest::gtest_main)
+include(GoogleTest)
 
 # PRE_TEST: discover at ctest time, not build time. Sanitizer-instrumented
 # binaries can exceed the 5s build-time discovery timeout on first launch.
-include(GoogleTest)
-gtest_discover_tests(smoke_test DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 60)
+# TIMEOUT acts as the watchdog for deadlock-prone concurrency tests.
+function(replayarena_add_test name)
+  add_executable(${name} ${name}.cpp)
+  target_link_libraries(${name} PRIVATE replayarena_gateway replayarena_options GTest::gtest_main)
+  gtest_discover_tests(${name}
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 60
+    PROPERTIES TIMEOUT 120)
+endfunction()
+
+replayarena_add_test(request_queue_test)
+replayarena_add_test(request_queue_stress_test)
