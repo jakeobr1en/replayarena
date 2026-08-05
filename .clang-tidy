@@ -1,0 +1,29 @@
+# replayarena static analysis rules.
+# Philosophy: concurrency and lifetime bugs are the enemy; style nits that
+# clang-format already handles are not re-checked here.
+Checks: >
+  bugprone-*,
+  concurrency-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  cppcoreguidelines-*,
+  misc-*,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -misc-non-private-member-variables-in-classes,
+  -cppcoreguidelines-non-private-member-variables-in-classes
+WarningsAsErrors: 'concurrency-*,bugprone-use-after-move,bugprone-dangling-handle'
+HeaderFilterRegex: '(src|include)/.*'
+CheckOptions:
+  readability-function-cognitive-complexity.Threshold: '25'
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.FunctionCase: camelBack
+  readability-identifier-naming.VariableCase: lower_case
+  readability-identifier-naming.MemberSuffix: '_'
+  readability-identifier-naming.ConstexprVariablePrefix: k
+  readability-identifier-naming.ConstexprVariableCase: CamelCase

@@ -1,0 +1,19 @@
+# replayarena formatting rules. LLVM base, 100 columns, 2-space indent.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+ColumnLimit: 100
+IndentWidth: 2
+AccessModifierOffset: -1
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakTemplateDeclarations: Yes
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Regroup
+InsertNewlineAtEOF: true
+PackConstructorInitializers: NextLine
+QualifierAlignment: Custom
+QualifierOrder: [static, constexpr, inline, const, volatile, type]
+SortIncludes: CaseSensitive
