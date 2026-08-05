@@ -49,6 +49,11 @@ the determinism story (v0.3) depends on.
 - [ ] Benchmark vs one-request-at-a-time baseline on the mock backend:
       throughput and p50/p99 latency, measured numbers in the PR
       description with hardware and flags. No fabricated numbers.
+- [ ] Benchmark the single decision thread's throughput ceiling
+      (decisions/sec with a zero-latency backend) and put the number in
+      the PR next to the expected request rate. The single-decision-thread
+      design is a deliberate determinism bet; the measured headroom is the
+      answer to "doesn't that bottleneck you?"
 
 ## Test plan
 
