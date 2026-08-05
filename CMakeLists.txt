@@ -31,6 +31,10 @@ elseif(NOT REPLAYARENA_SANITIZE STREQUAL "")
   message(FATAL_ERROR "Unknown REPLAYARENA_SANITIZE value: ${REPLAYARENA_SANITIZE}")
 endif()
 
+# Header-only gateway components (issue #1 onward).
+add_library(replayarena_gateway INTERFACE)
+target_include_directories(replayarena_gateway INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 add_executable(replayarena src/main.cpp)
 target_link_libraries(replayarena PRIVATE replayarena_options)
 
