@@ -25,3 +25,4 @@ function(replayarena_add_test name)
 endfunction()
 
 replayarena_add_test(request_queue_test)
+replayarena_add_test(request_queue_stress_test)
