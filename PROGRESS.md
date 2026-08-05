@@ -15,10 +15,13 @@ Rules for this file:
 - **What works today**: bounded MPSC `RequestQueue<T>` with backpressure
   (try_push fail-fast, blocking push with deadline), cancellation via
   shared `CancelToken` (cancelled entries skipped at pop, slots reclaimed),
-  and clean close/drain semantics; 16 tests including TSan-targeted
-  multi-producer stress, cancellation-race, and shutdown tests.
-- **Next issue up**: [#2 Response cache, staged: get/set/delete -> TTL ->
-  LRU cap](https://github.com/jakeobr1en/replayarena/issues/2).
+  and clean close/drain semantics; canonical `CacheKey` (length-prefixed,
+  param-order-independent) and thread-safe `ResponseCache` get/set/erase
+  with hit/miss/size stats; 30 tests including TSan-targeted stress tests
+  for both components.
+- **Next issue up**: [#2](https://github.com/jakeobr1en/replayarena/issues/2)
+  stage 2 (per-entry TTL via an injected Clock; the Clock abstraction gets
+  introduced there). Stage 1 (get/set/erase) is done.
 
 ---
 
@@ -130,6 +133,36 @@ Rules for this file:
 - Deadlock watchdog for concurrency tests is ctest's per-test TIMEOUT
   property rather than in-test watchdog threads; a hang fails CI instead
   of hanging it.
+
+**Dead ends**
+- None over the 30-minute bar this session.
+
+### 2026-08-04 - Issue #2 stage 1: response cache get/set/erase
+
+**Shipped**
+- `src/gateway/cache_key.h`: canonical request identity. Length-prefixed
+  fields (embedded NULs safe, no boundary confusion), sampling params
+  sorted by name then value so call-site order cannot matter.
+- `src/gateway/response_cache.h`: thread-safe get/set/erase behind a
+  shared_mutex; hits/misses as atomics (mutated under the shared lock);
+  size_bytes accounting (key + payload, exact across overwrite and erase);
+  Stats already carries evictions/size_bytes so stages 2 and 3 do not
+  break the API.
+- 15 new tests including a torn-read check under 8-thread mixed load and
+  an identical-ops-produce-identical-caches determinism sanity test.
+
+**Decisions**
+- Deviation from the issue draft, on purpose: the cache key is the
+  canonical byte string itself, not a SHA-256 of it. Nothing needs a
+  content hash until the trace recorder (issue #4) does divergence
+  reports, and hand-rolling crypto in a cache PR is the wrong place for
+  it. When SHA-256 arrives for traces, keying can switch to the digest if
+  the memory ever matters. Noted in the PR description.
+- std::hash is used only for bucket placement inside the map and is never
+  recorded, so unordered-container iteration order cannot leak into
+  replayable state.
+- CLAUDE.md gained a rule (separate docs PR): sessions end with the
+  branch pushed and the PR URL printed.
 
 **Dead ends**
 - None over the 30-minute bar this session.
