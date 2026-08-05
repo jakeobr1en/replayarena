@@ -14,8 +14,8 @@ Rules for this file:
 - **Current phase**: pre-v0.1. Docs, scaffold, and CI exist; no engine code.
 - **What works today**: hello-world gateway binary builds; one GoogleTest
   smoke test passes; CI runs build + tests under ASan and TSan on every PR.
-- **Next issue up**: #1 Bounded MPSC request queue with backpressure and
-  cancellation (draft in `.github/ISSUE_DRAFTS/01-bounded-mpsc-queue.md`).
+- **Next issue up**: [#1 Bounded MPSC request queue with backpressure and
+  cancellation](https://github.com/jakeobr1en/replayarena/issues/1).
 
 ---
 
@@ -74,6 +74,28 @@ Rules for this file:
   output). Conclusion: sanitizer verification is CI-only (Ubuntu,
   GCC 13 + Clang 16) until Apple ships a fixed runtime. Cost: ~45 minutes
   of diagnosis; the recursive-init stack trace is good writing material.
+
+### 2026-08-04 - Repo published, CI shaken out, issues opened
+
+**Shipped**
+- Repo live at github.com/jakeobr1en/replayarena; initial history pushed.
+- First CI run green across the whole matrix (clang-format + ASan/TSan x
+  GCC 13/Clang 16) on the first attempt; GCC's -Wconversion had nothing
+  to say about the scaffold. The real shakeout comes with issue #1 code.
+- Bumped actions/checkout v4 -> v5 to clear Node 20 deprecation warnings
+  that annotated every job.
+- Issues #1-#5 opened from the drafts; numbers match the draft numbering
+  exactly, so all cross-references (#1 in #3, #3 in #4, #4 in #5) hold.
+- Branch protection on main: PRs required, all five CI checks required,
+  zero required approvals (solo repo: self-merge allowed, direct push
+  blocked; requiring approvals would deadlock a single maintainer).
+
+**Decisions**
+- Issue #3 gained an acceptance criterion: benchmark the single decision
+  thread's throughput ceiling (decisions/sec, zero-latency backend) and
+  publish it next to the expected request rate. The single-decision-thread
+  scheduler is the determinism bet; the measured headroom is the prepared
+  answer to "doesn't one scheduler thread bottleneck you?"
 
 ---
 
