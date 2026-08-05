@@ -23,6 +23,8 @@ disciplined engineer worked here, because one did.
   deltas where relevant (before/after numbers, measurement setup).
 - Prefer small, reviewable diffs. If a task wants more than ~400 changed
   lines, split it into multiple PRs and say so explicitly.
+- End every feature session by pushing the branch to origin and printing
+  the PR URL. A session is not done until the branch exists on GitHub.
 
 ## Testing
 
