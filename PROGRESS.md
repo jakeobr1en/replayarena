@@ -11,11 +11,14 @@ Rules for this file:
 
 ## Status
 
-- **Current phase**: pre-v0.1. Docs, scaffold, and CI exist; no engine code.
-- **What works today**: hello-world gateway binary builds; one GoogleTest
-  smoke test passes; CI runs build + tests under ASan and TSan on every PR.
-- **Next issue up**: [#1 Bounded MPSC request queue with backpressure and
-  cancellation](https://github.com/jakeobr1en/replayarena/issues/1).
+- **Current phase**: v0.1 in progress.
+- **What works today**: bounded MPSC `RequestQueue<T>` with backpressure
+  (try_push fail-fast, blocking push with deadline), cancellation via
+  shared `CancelToken` (cancelled entries skipped at pop, slots reclaimed),
+  and clean close/drain semantics; 16 tests including TSan-targeted
+  multi-producer stress, cancellation-race, and shutdown tests.
+- **Next issue up**: [#2 Response cache, staged: get/set/delete -> TTL ->
+  LRU cap](https://github.com/jakeobr1en/replayarena/issues/2).
 
 ---
 
@@ -96,6 +99,40 @@ Rules for this file:
   publish it next to the expected request rate. The single-decision-thread
   scheduler is the determinism bet; the measured headroom is the prepared
   answer to "doesn't one scheduler thread bottleneck you?"
+
+### 2026-08-04 - Issue #1: bounded MPSC queue shipped
+
+**Shipped**
+- `src/gateway/cancel_token.h` + `src/gateway/request_queue.h`: bounded
+  MPSC ring-buffer queue, pre-allocated storage (no hot-path allocation),
+  try_push/push-with-deadline/pop-with-deadline/close, per-request
+  CancelToken, Stats counters (pushed/popped/skipped_cancelled) that later
+  feed the queue-depth metric.
+- 13 unit tests (single-threaded semantics of every result path) plus 3
+  concurrency tests: 1600-request producer storm with ~30% concurrent
+  cancellation asserting exactly-once delivery and conservation
+  (popped + skipped_cancelled == pushed), close-wakes-blocked-producers,
+  and a 20-round randomized-close-point conservation test. Stress suite
+  repeated 25x locally without a failure; all PRNG seeds fixed.
+
+**Decisions**
+- Mutex + two condition variables around a ring buffer, not lock-free.
+  Why: correctness and TSan-provability first; the queue feeds a scheduler
+  that makes decisions single-threaded anyway, so queue throughput is not
+  the system bottleneck. Revisit only with a measured need.
+- Cancellation race semantics: delivery wins. A request popped before its
+  token is cancelled counts as delivered; in-flight cancellation is the
+  consumer's job (scheduler, issue #3). This keeps the queue's
+  exactly-once terminal-status contract crisp and testable.
+- Cancelled entries free their slot when the consumer skips them, not at
+  cancel() time. cancel() stays wait-free and never touches the queue
+  lock; the cost is that a cancelled entry can occupy a slot briefly.
+- Deadlock watchdog for concurrency tests is ctest's per-test TIMEOUT
+  property rather than in-test watchdog threads; a hang fails CI instead
+  of hanging it.
+
+**Dead ends**
+- None over the 30-minute bar this session.
 
 ---
 
