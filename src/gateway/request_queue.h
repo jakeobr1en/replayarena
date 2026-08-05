@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gateway/cancel_token.h"
+
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
@@ -10,17 +12,15 @@
 #include <utility>
 #include <vector>
 
-#include "gateway/cancel_token.h"
-
 namespace replayarena {
 
 // Result of a push attempt. No exceptions cross this module boundary; every
 // outcome is an explicit value (SPEC.md section 7).
 enum class PushResult {
   kOk,
-  kQueueFull,  // try_push only: no capacity right now
-  kTimeout,    // push only: capacity did not free up before the deadline
-  kClosed,     // queue was closed; the request was not accepted
+  kQueueFull, // try_push only: no capacity right now
+  kTimeout,   // push only: capacity did not free up before the deadline
+  kClosed,    // queue was closed; the request was not accepted
 };
 
 // Bounded multi-producer single-consumer queue with backpressure and
@@ -50,9 +50,9 @@ class RequestQueue {
   using Deadline = std::chrono::steady_clock::time_point;
 
   struct Stats {
-    std::size_t pushed = 0;             // accepted by push/try_push
-    std::size_t popped = 0;             // delivered to the consumer
-    std::size_t skipped_cancelled = 0;  // reclaimed without delivery
+    std::size_t pushed = 0;            // accepted by push/try_push
+    std::size_t popped = 0;            // delivered to the consumer
+    std::size_t skipped_cancelled = 0; // reclaimed without delivery
   };
 
   // Precondition: capacity > 0.
@@ -112,7 +112,7 @@ class RequestQueue {
         return std::nullopt;
       }
       if (not_empty_.wait_until(lock, deadline) == std::cv_status::timeout) {
-        return take_front_locked();  // last chance; may still be empty
+        return take_front_locked(); // last chance; may still be empty
       }
     }
   }
@@ -201,4 +201,4 @@ class RequestQueue {
   Stats stats_;
 };
 
-}  // namespace replayarena
+} // namespace replayarena

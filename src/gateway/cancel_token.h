@@ -21,4 +21,4 @@ class CancelToken {
 
 using CancelTokenPtr = std::shared_ptr<CancelToken>;
 
-}  // namespace replayarena
+} // namespace replayarena
