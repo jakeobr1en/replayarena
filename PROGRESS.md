@@ -12,18 +12,18 @@ Rules for this file:
 ## Status
 
 - **Current phase**: v0.1 in progress.
-- **What works today**: bounded MPSC `RequestQueue<T>` with backpressure
-  (try_push fail-fast, blocking push with deadline), cancellation via
-  shared `CancelToken` (cancelled entries skipped at pop, slots reclaimed),
-  and clean close/drain semantics; injected `Clock` abstraction
-  (`SteadyClock` production, `SimulatedClock` with manual advance for
-  tests/replay); canonical `CacheKey`; thread-safe `ResponseCache` with
-  get/set/erase, per-entry TTL (lazy reclaim on access + sweep), and
-  hit/miss/expiration/size stats; 45 tests, no sleeps anywhere in
-  TTL testing.
-- **Next issue up**: [#2](https://github.com/jakeobr1en/replayarena/issues/2)
-  stage 3 (LRU eviction under a byte cap; deterministic eviction order).
-  Stages 1 (get/set/erase) and 2 (TTL) are done.
+- **What works today**: bounded MPSC `RequestQueue<T>` with backpressure,
+  cancellation, and close/drain semantics; injected `Clock` abstraction
+  (`SteadyClock` production, `SimulatedClock` manual advance); canonical
+  `CacheKey`; complete `ResponseCache` (issue #2 done): get/set/erase,
+  per-entry TTL, and LRU eviction under a byte cap with deterministic
+  eviction order; 54 tests, all TTL/eviction behavior stepped on the
+  simulated clock with zero sleeps.
+- **Next issue up**: [#3 Deadline-aware batch scheduler and worker
+  pool](https://github.com/jakeobr1en/replayarena/issues/3) - starts v0.2.
+  Includes the deterministic mock backend, the event-sink interface the
+  trace recorder (#4) will implement, and the decision-thread throughput
+  ceiling benchmark.
 
 ---
 
@@ -214,6 +214,46 @@ Rules for this file:
 **Dead ends**
 - None over the 30-minute bar this session.
 
+### 2026-08-07 - Issue #2 stage 3: LRU byte cap; issue #2 complete
+
+**Shipped**
+- LRU eviction under a configurable byte cap (`ResponseCache(clock,
+  max_size_bytes)`; nullopt = unbounded). set() evicts least-recently-used
+  entries until the invariant size_bytes <= cap holds, so size never
+  exceeds the cap after set returns. "Use" = hit or set. Recency lives in
+  an intrusive std::list of pointers into the map's keys (node-based map,
+  stable addresses); eviction order is a pure function of the operation
+  sequence, never of unordered_map iteration order.
+- Oversized-entry semantics: an entry larger than the whole cap is
+  admitted and then immediately evicted by the same invariant loop; the
+  cache ends empty and the eviction is counted. No special-case rejection
+  path to test separately.
+- Expired-but-unreclaimed entries keep their list position and are
+  evicted like any other entry (counted as evictions, not expirations);
+  the two stats stay strictly separate.
+- 9 new tests (54 total): exact eviction-order assertions, recency
+  refresh via get and via overwrite, cap invariant held across every set,
+  oversized entry, expiry/eviction stat separation, and a two-instance
+  determinism test asserting key-by-key survival agreement (counts alone
+  could mask same-count-different-keys divergence). Stress test now runs
+  with the cap at half the working-set size, so eviction races TTL
+  expiry, erase, and sweep under TSan; a sampled cap-invariant check
+  runs inside the worker loop.
+
+**Decisions**
+- Dropped shared_mutex for a plain mutex (own refactor commit before the
+  feature). LRU touch makes every hit a writer, so shared locking would
+  only help miss-heavy loads nobody has measured a need for; the plain
+  mutex also deleted stage 2's shared-to-exclusive reclaim dance and the
+  atomic hit/miss counters - less machinery, one less subtle race to
+  reason about. Revisit only with v0.2 metrics showing contention.
+- Digest keying deliberately not revisited (per issue #2 note): key bytes
+  are visible in size_bytes accounting and nothing suggests they matter
+  yet.
+
+**Dead ends**
+- None over the 30-minute bar this session.
+
 ---
 
 ## Insights (one-liners worth expanding into posts)
@@ -230,3 +270,6 @@ Rules for this file:
   shared lock is ancient history by the time you hold the exclusive one.
 - TSan proves you have no data races, not that your races are benign;
   logic races need a test that makes the interleaving deterministic.
+- Sometimes the best concurrency refactor is deleting concurrency: the
+  LRU list turned every reader into a writer, and admitting that deleted
+  a shared_mutex, two atomics, and a lock-upgrade race.
