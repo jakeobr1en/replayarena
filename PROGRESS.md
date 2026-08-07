@@ -20,10 +20,9 @@ Rules for this file:
   eviction order; 54 tests, all TTL/eviction behavior stepped on the
   simulated clock with zero sleeps.
 - **Next issue up**: [#3](https://github.com/jakeobr1en/replayarena/issues/3)
-  part 2 of 3: the scheduler core (single decision thread, EDF batch
-  formation, early dispatch, infeasibility rejection) plus the worker
-  pool. Part 1 (interfaces + mock backend) is done. Part 3 is the
-  benchmarks (vs naive baseline; decision-thread throughput ceiling).
+  part 3: the threaded driver (ingress wiring, scheduler thread, worker
+  pool) and then the benchmarks. Parts 1 (interfaces + mock backend) and
+  2 (pure scheduler core) are done.
 
 ---
 
@@ -296,6 +295,51 @@ Rules for this file:
 **Dead ends**
 - None over the 30-minute bar this session.
 
+### 2026-08-07 - Issue #3 part 2: the pure scheduler core
+
+**Shipped**
+- `src/gateway/scheduler_core.h`: the gateway's decision core. No
+  threads, no locks, no waits, no clock - time is an argument. Inputs
+  (on_arrival / on_completion / on_time) return a SchedulerStep (batches
+  to dispatch, terminal outcomes to deliver); every decision is emitted
+  to the event sink with a strictly increasing logical tick.
+  next_wakeup() tells the future driver when a time-based trigger could
+  fire, so the driver never invents timing decisions of its own.
+- Policy: EDF with arrival-order tie-break; dispatch on any of full
+  batch, head waited max_wait, or last-safe-moment slack trigger
+  (now + estimated_batch_latency + slack_margin >= head deadline);
+  infeasibility rejection at arrival and again at formation time;
+  cancellation observed at arrival and formation (in-flight cancellation
+  is v0.3 scope).
+- 20 tests pinning exact behavior: trigger boundaries tested at the
+  exact instant either side, EDF and tie-break order asserted on
+  BatchFormed member lists, formation-time rejection when a worker
+  frees too late, cancelled entries not consuming batch capacity,
+  next_wakeup semantics (min of triggers, nullopt when input-only,
+  clamped to now), strictly increasing ticks, exactly-once terminal
+  outcomes, and a two-core identical-input determinism check that
+  drains all dispatches through completions.
+
+**Decisions**
+- The scheduler is split into a pure core and a threaded driver
+  (next PR) rather than one threaded class. The core is a deterministic
+  function of (state, input, now): unit-testable to the exact event
+  stream with no threads and no sleeps, and replayable by driving it
+  from a trace (issue #4 needs exactly this seam). The driver will own
+  blocking mechanics and make zero decisions.
+- Feasibility boundary: a request needing exactly its remaining slack
+  (now + estimate == deadline) is feasible; infeasible strictly after.
+  Tested at the boundary.
+- RequestOutcome.reject_reason is std::optional rather than a defaulted
+  enum: a meaningless-but-set default value would silently participate
+  in equality comparisons, and outcome equality is what the determinism
+  tests (and later replay) rely on. Caught while writing the tests.
+
+**Dead ends**
+- None over the 30-minute bar; two test-config mistakes (relying on
+  batch accumulation while max_wait defaulted to zero, i.e.
+  dispatch-immediately) were caught by the first local run.
+
 ---
 
 ## Insights (one-liners worth expanding into posts)
@@ -315,3 +359,5 @@ Rules for this file:
 - Sometimes the best concurrency refactor is deleting concurrency: the
   LRU list turned every reader into a writer, and admitting that deleted
   a shared_mutex, two atomics, and a lock-upgrade race.
+- A scheduler you can unit-test to the exact event stream is a scheduler
+  you can replay: purity is not a style choice, it is the feature.
