@@ -11,7 +11,7 @@ Rules for this file:
 
 ## Status
 
-- **Current phase**: v0.1 in progress.
+- **Current phase**: v0.2 in progress (v0.1 complete, tagged v0.1.0).
 - **What works today**: bounded MPSC `RequestQueue<T>` with backpressure,
   cancellation, and close/drain semantics; injected `Clock` abstraction
   (`SteadyClock` production, `SimulatedClock` manual advance); canonical
@@ -19,11 +19,11 @@ Rules for this file:
   per-entry TTL, and LRU eviction under a byte cap with deterministic
   eviction order; 54 tests, all TTL/eviction behavior stepped on the
   simulated clock with zero sleeps.
-- **Next issue up**: [#3 Deadline-aware batch scheduler and worker
-  pool](https://github.com/jakeobr1en/replayarena/issues/3) - starts v0.2.
-  Includes the deterministic mock backend, the event-sink interface the
-  trace recorder (#4) will implement, and the decision-thread throughput
-  ceiling benchmark.
+- **Next issue up**: [#3](https://github.com/jakeobr1en/replayarena/issues/3)
+  part 2 of 3: the scheduler core (single decision thread, EDF batch
+  formation, early dispatch, infeasibility rejection) plus the worker
+  pool. Part 1 (interfaces + mock backend) is done. Part 3 is the
+  benchmarks (vs naive baseline; decision-thread throughput ceiling).
 
 ---
 
@@ -250,6 +250,48 @@ Rules for this file:
 - Digest keying deliberately not revisited (per issue #2 note): key bytes
   are visible in size_bytes accounting and nothing suggests they matter
   yet.
+
+**Dead ends**
+- None over the 30-minute bar this session.
+
+### 2026-08-07 - v0.1.0 tagged; issue #3 part 1: interfaces and mock backend
+
+**Shipped**
+- Tagged and released v0.1.0 (queue, cache, CI/sanitizers).
+- `src/gateway/request.h`: `Request` (id, client, model, prompt, deadline,
+  cancel token), `BackendResponse`, `Batch`. Submitter-assigned unique
+  request ids are the identity that traces, events, and responses share.
+- `src/gateway/backend.h`: `Backend` interface. Contract: synchronous
+  execute() from worker threads, thread-safe, exactly one response per
+  request in order, failures reported in-payload (no exceptions across
+  the boundary), and output bytes must never be shaped by clock reads.
+- `src/gateway/scheduler_events.h`: the decision stream. Seven event
+  types as a std::variant, each with defaulted equality (equality is
+  load-bearing: replay divergence detection in #4 is event comparison);
+  `SchedulerEventSink` interface + `NullEventSink` (also the baseline for
+  measuring recording overhead later).
+- `src/gateway/mock_backend.h`: deterministic mock. Output is FNV-1a of
+  (seed, model, prompt) with explicit little-endian seed mixing and field
+  separators, so bytes are identical across platforms, instances, and
+  batch positions. Optional simulated latency is a real sleep on the
+  worker thread: it models work, never shapes bytes or decisions.
+- 13 new tests (67 total): mock determinism across calls/instances/batch
+  positions, field-boundary and endianness-stability checks, and event
+  equality semantics (tick, payload kind, batch member order, and
+  rejection reason all participate; a reordered batch is a divergence,
+  not an equivalent batch).
+
+**Decisions**
+- Issue #3 split into three PRs: interfaces + mock backend (this one),
+  scheduler core + worker pool, benchmarks. Keeps each diff reviewable
+  and lets the scheduler PR land against already-stable interfaces.
+- BatchCompleted is an explicit event: worker completions re-enter the
+  scheduler as inputs, so the order the decision thread processes them
+  is recorded data, not hidden interleaving. This is the design bet from
+  SPEC.md section 6 becoming API.
+- MockBackend latency is real sleep, not simulated-clock time: workers
+  hold no clock, and the point is to occupy a worker thread so batching
+  is observable. Zero in tests, nonzero only in benchmarks.
 
 **Dead ends**
 - None over the 30-minute bar this session.
