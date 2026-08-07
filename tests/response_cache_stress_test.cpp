@@ -11,22 +11,24 @@
 #include <thread>
 #include <vector>
 
-// Concurrency test for ResponseCache stages 1+2. Must stay silent under TSan
-// in CI. Fixed seeds: a failure here must reproduce. Time is driven by a
-// SimulatedClock advanced from a dedicated thread, so TTL expiry races get,
-// set, erase, and sweep without any wall-clock dependence.
+// Concurrency test for the complete ResponseCache (stages 1+2+3). Must stay
+// silent under TSan in CI. Fixed seeds: a failure here must reproduce. Time
+// is driven by a SimulatedClock advanced from a dedicated thread, so TTL
+// expiry races get, set, erase, and sweep; the byte cap is sized well below
+// the working set, so LRU eviction races everything too.
 namespace replayarena {
 namespace {
 
 using namespace std::chrono_literals;
 
-TEST(ResponseCacheStress, MixedOpsWithTtlAndConcurrentClockAdvance) {
+TEST(ResponseCacheStress, MixedOpsWithTtlEvictionAndConcurrentClockAdvance) {
   constexpr std::size_t kThreads = 8;
   constexpr std::size_t kOpsPerThread = 5000;
   constexpr std::size_t kKeySpace = 64;
+  static constexpr std::size_t kByteCap = 2000; // well below the ~4.5KB working set
 
   SimulatedClock clock;
-  ResponseCache cache(clock);
+  ResponseCache cache(clock, kByteCap);
   std::vector<CacheKey> keys;
   keys.reserve(kKeySpace);
   for (std::size_t i = 0; i < kKeySpace; ++i) {
@@ -73,6 +75,10 @@ TEST(ResponseCacheStress, MixedOpsWithTtlAndConcurrentClockAdvance) {
             EXPECT_EQ(got->rfind("payload-", 0), 0u);
           }
           ++local_gets;
+          if (i % 256 == 0) {
+            // The cap invariant must hold at every observable instant.
+            EXPECT_LE(cache.stats().size_bytes, kByteCap);
+          }
           break;
         }
         }
@@ -88,6 +94,7 @@ TEST(ResponseCacheStress, MixedOpsWithTtlAndConcurrentClockAdvance) {
   const auto stats = cache.stats();
   EXPECT_EQ(stats.hits + stats.misses, local_gets.load());
   EXPECT_LE(stats.entries, kKeySpace);
+  EXPECT_LE(stats.size_bytes, kByteCap);
 
   // Draining everything must zero the byte accounting exactly.
   for (const auto& k : keys) {

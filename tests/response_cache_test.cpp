@@ -162,6 +162,137 @@ TEST_F(ResponseCacheTest, ExpiredEntryStillCountsInEntriesUntilReclaimed) {
   EXPECT_EQ(cache_.stats().entries, 0u);
 }
 
+// ---- Stage 3: LRU eviction under a byte cap ----
+
+// Helpers sized so arithmetic in the tests is readable: every key here has
+// identical byte length, so capacity math depends only on payload sizes.
+CacheKey k1(char c) {
+  return CacheKey::make("m", std::string(1, c), {});
+}
+std::size_t entry_bytes(char c, std::size_t payload_size) {
+  return k1(c).bytes().size() + payload_size;
+}
+
+TEST_F(ResponseCacheTest, UnboundedCacheNeverEvicts) {
+  for (char c = 'a'; c <= 'z'; ++c) {
+    cache_.set(k1(c), std::string(1000, c));
+  }
+  EXPECT_EQ(cache_.stats().evictions, 0u);
+  EXPECT_EQ(cache_.stats().entries, 26u);
+}
+
+TEST_F(ResponseCacheTest, SizeNeverExceedsCapAfterSet) {
+  ResponseCache cache{clock_, 3 * entry_bytes('a', 4)};
+  for (char c = 'a'; c <= 'z'; ++c) {
+    cache.set(k1(c), std::string(4, c));
+    EXPECT_LE(cache.stats().size_bytes, 3 * entry_bytes('a', 4));
+  }
+  EXPECT_EQ(cache.stats().entries, 3u);
+  EXPECT_EQ(cache.stats().evictions, 23u);
+}
+
+TEST_F(ResponseCacheTest, EvictsLeastRecentlyUsedFirst) {
+  ResponseCache cache{clock_, 3 * entry_bytes('a', 1)};
+  cache.set(k1('a'), "1");
+  cache.set(k1('b'), "2");
+  cache.set(k1('c'), "3");
+  cache.set(k1('d'), "4"); // over cap: a is LRU, a goes
+  EXPECT_EQ(cache.get(k1('a')), std::nullopt);
+  EXPECT_EQ(cache.get(k1('b')), std::optional<std::string>("2"));
+  EXPECT_EQ(cache.get(k1('c')), std::optional<std::string>("3"));
+  EXPECT_EQ(cache.get(k1('d')), std::optional<std::string>("4"));
+  EXPECT_EQ(cache.stats().evictions, 1u);
+}
+
+TEST_F(ResponseCacheTest, GetRefreshesRecency) {
+  ResponseCache cache{clock_, 3 * entry_bytes('a', 1)};
+  cache.set(k1('a'), "1");
+  cache.set(k1('b'), "2");
+  cache.set(k1('c'), "3");
+  ASSERT_EQ(cache.get(k1('a')), std::optional<std::string>("1")); // a is now MRU
+  cache.set(k1('d'), "4");                                        // b is LRU, b goes
+  EXPECT_EQ(cache.get(k1('b')), std::nullopt);
+  EXPECT_EQ(cache.get(k1('a')), std::optional<std::string>("1"));
+}
+
+TEST_F(ResponseCacheTest, OverwriteRefreshesRecency) {
+  ResponseCache cache{clock_, 3 * entry_bytes('a', 1)};
+  cache.set(k1('a'), "1");
+  cache.set(k1('b'), "2");
+  cache.set(k1('c'), "3");
+  cache.set(k1('a'), "9"); // overwrite: a is now MRU
+  cache.set(k1('d'), "4"); // b is LRU, b goes
+  EXPECT_EQ(cache.get(k1('b')), std::nullopt);
+  EXPECT_EQ(cache.get(k1('a')), std::optional<std::string>("9"));
+}
+
+TEST_F(ResponseCacheTest, OversizedEntryIsAdmittedThenImmediatelyEvicted) {
+  ResponseCache cache{clock_, 8};
+  cache.set(k1('a'), std::string(100, 'x'));
+  const auto stats = cache.stats();
+  EXPECT_EQ(stats.entries, 0u);
+  EXPECT_EQ(stats.size_bytes, 0u);
+  EXPECT_EQ(stats.evictions, 1u);
+  EXPECT_EQ(cache.get(k1('a')), std::nullopt);
+}
+
+TEST_F(ResponseCacheTest, ExpiredEntriesAreEvictableLikeAnyOther) {
+  using namespace std::chrono_literals;
+  ResponseCache cache{clock_, 2 * entry_bytes('a', 1)};
+  cache.set(k1('a'), "1", 1ms);
+  cache.set(k1('b'), "2");
+  clock_.advance(10ms);    // a is expired but unreclaimed, still occupying bytes
+  cache.set(k1('c'), "3"); // over cap: a is LRU, evicted (counts as eviction)
+  const auto stats = cache.stats();
+  EXPECT_EQ(stats.evictions, 1u);
+  EXPECT_EQ(stats.expirations, 0u);
+  EXPECT_EQ(cache.get(k1('b')), std::optional<std::string>("2"));
+  EXPECT_EQ(cache.get(k1('c')), std::optional<std::string>("3"));
+}
+
+TEST_F(ResponseCacheTest, EvictionAndExpiryStatsStaySeparate) {
+  using namespace std::chrono_literals;
+  ResponseCache cache{clock_, 2 * entry_bytes('a', 1)};
+  cache.set(k1('a'), "1", 1ms);
+  clock_.advance(2ms);
+  EXPECT_EQ(cache.get(k1('a')), std::nullopt); // expiration, not eviction
+  cache.set(k1('b'), "2");
+  cache.set(k1('c'), "3");
+  cache.set(k1('d'), "4"); // eviction, not expiration
+  const auto stats = cache.stats();
+  EXPECT_EQ(stats.expirations, 1u);
+  EXPECT_EQ(stats.evictions, 1u);
+}
+
+TEST_F(ResponseCacheTest, EvictionOrderIsDeterministicAcrossInstances) {
+  // Same capped cache, same operation sequence (including gets, which change
+  // recency): the surviving key set must be identical.
+  const auto run = [](ResponseCache& cache) {
+    for (char c = 'a'; c <= 'j'; ++c) {
+      cache.set(k1(c), std::string(3, c));
+    }
+    (void)cache.get(k1('b'));
+    (void)cache.get(k1('d'));
+    cache.set(k1('k'), "kkk");
+    cache.set(k1('l'), "lll");
+    (void)cache.get(k1('f'));
+    cache.set(k1('m'), "mmm");
+  };
+  ResponseCache a{clock_, 6 * entry_bytes('a', 3)};
+  ResponseCache b{clock_, 6 * entry_bytes('a', 3)};
+  run(a);
+  run(b);
+  EXPECT_EQ(a.stats().evictions, b.stats().evictions);
+  EXPECT_EQ(a.stats().size_bytes, b.stats().size_bytes);
+  for (char c = 'a'; c <= 'm'; ++c) {
+    // Survival itself must agree key by key; stats() alone could mask a
+    // same-count-different-keys divergence.
+    const bool in_a = a.get(k1(c)).has_value();
+    const bool in_b = b.get(k1(c)).has_value();
+    EXPECT_EQ(in_a, in_b) << "divergent survival for key " << c;
+  }
+}
+
 TEST_F(ResponseCacheTest, IdenticalOperationSequencesProduceIdenticalCaches) {
   // Determinism sanity for the replay story: same ops and same clock steps
   // in, same state out.
